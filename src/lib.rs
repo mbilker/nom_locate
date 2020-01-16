@@ -107,7 +107,6 @@ mod lib {
 use lib::std::*;
 
 use bytecount::{naive_num_chars, num_chars};
-use memchr::Memchr;
 #[cfg(feature = "alloc")]
 use nom::ExtendInto;
 use nom::{
@@ -128,10 +127,6 @@ pub struct LocatedSpan<T, X = ()> {
     /// The offset represents the position of the fragment relatively to
     /// the input of the parser. It starts at offset 0.
     offset: usize,
-
-    /// The line number of the fragment relatively to the input of the
-    /// parser. It starts at line 1.
-    line: u32,
 
     /// The fragment that is spanned.
     /// The fragment represents a part of the input of the parser.
@@ -188,7 +183,6 @@ impl<T: AsBytes> LocatedSpan<T, ()> {
     pub fn new(program: T) -> LocatedSpan<T, ()> {
         LocatedSpan {
             offset: 0,
-            line: 1,
             fragment: program,
             extra: (),
         }
@@ -226,7 +220,6 @@ impl<T: AsBytes, X> LocatedSpan<T, X> {
     pub fn new_extra(program: T, extra: X) -> LocatedSpan<T, X> {
         LocatedSpan {
             offset: 0,
-            line: 1,
             fragment: program,
             extra: extra,
         }
@@ -238,13 +231,11 @@ impl<T: AsBytes, X> LocatedSpan<T, X> {
     /// assuming any negative index within the offset is valid.
     pub unsafe fn new_from_raw_offset(
         offset: usize,
-        line: u32,
         fragment: T,
         extra: X,
     ) -> LocatedSpan<T, X> {
         LocatedSpan {
             offset,
-            line,
             fragment,
             extra,
         }
@@ -254,12 +245,6 @@ impl<T: AsBytes, X> LocatedSpan<T, X> {
     /// the input of the parser. It starts at offset 0.
     pub fn location_offset(&self) -> usize {
         self.offset
-    }
-
-    /// The line number of the fragment relatively to the input of the
-    /// parser. It starts at line 1.
-    pub fn location_line(&self) -> u32 {
-        self.line
     }
 
     /// The fragment that is spanned.
@@ -297,43 +282,6 @@ impl<T: AsBytes, X> LocatedSpan<T, X> {
         };
 
         (column, &before_self[self.offset - (column - 1)..])
-    }
-
-    /// Return the line that contains this LocatedSpan.
-    ///
-    /// The `get_column` and `get_utf8_column` functions returns
-    /// indexes that corresponds to the line returned by this function.
-    ///
-    /// Note that if this LocatedSpan ends before the end of the
-    /// original data, the result of calling `get_line_beginning()`
-    /// will not include any data from after the LocatedSpan.
-    ///
-    /// ```
-    /// # extern crate nom_locate;
-    /// # extern crate nom;
-    /// # use nom_locate::LocatedSpan;
-    /// # use nom::{Slice, FindSubstring};
-    /// #
-    /// # fn main() {
-    /// let program = LocatedSpan::new(
-    ///     "Hello World!\
-    ///     \nThis is a multi-line input\
-    ///     \nthat ends after this line.\n");
-    /// let multi = program.find_substring("multi").unwrap();
-    ///
-    /// assert_eq!(
-    ///     program.slice(multi..).get_line_beginning(),
-    ///     "This is a multi-line input".as_bytes(),
-    /// );
-    /// # }
-    /// ```
-    pub fn get_line_beginning(&self) -> &[u8] {
-        let column0 = self.get_column() - 1;
-        let the_line = &self.get_unoffsetted_slice()[self.offset - column0..];
-        match memchr::memchr(b'\n', &the_line[column0..]) {
-            None => the_line,
-            Some(pos) => &the_line[..column0 + pos],
-        }
     }
 
     /// Return the column index, assuming 1 byte = 1 column.
@@ -418,7 +366,6 @@ impl<T: AsBytes, X> LocatedSpan<T, X> {
 impl<T: Hash, X> Hash for LocatedSpan<T, X> {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.offset.hash(state);
-        self.line.hash(state);
         self.fragment.hash(state);
     }
 }
@@ -431,7 +378,7 @@ impl<T: AsBytes, X: Default> From<T> for LocatedSpan<T, X> {
 
 impl<T: AsBytes + PartialEq, X> PartialEq for LocatedSpan<T, X> {
     fn eq(&self, other: &Self) -> bool {
-        self.line == other.line && self.offset == other.offset && self.fragment == other.fragment
+        self.offset == other.offset && self.fragment == other.fragment
     }
 }
 
@@ -653,23 +600,15 @@ macro_rules! impl_slice_range {
                 let consumed_len = self.fragment.offset(&next_fragment);
                 if consumed_len == 0 {
                     return LocatedSpan {
-                        line: self.line,
                         offset: self.offset,
                         fragment: next_fragment,
                         extra: self.extra.clone(),
                     };
                 }
 
-                let consumed = self.fragment.slice(..consumed_len);
                 let next_offset = self.offset + consumed_len;
 
-                let consumed_as_bytes = consumed.as_bytes();
-                let iter = Memchr::new(b'\n', consumed_as_bytes);
-                let number_of_lines = iter.count() as u32;
-                let next_line = self.line + number_of_lines;
-
                 LocatedSpan {
-                    line: next_line,
                     offset: next_offset,
                     fragment: next_fragment,
                     extra: self.extra.clone(),
